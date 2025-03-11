@@ -1,0 +1,47 @@
+name: Deploy to Proxmox
+
+on:
+  push:
+    branches:
+      - main  # Déclenche le workflow quand on pousse sur main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v3
+
+      - name: Construire l’image Docker
+        run: docker build -t mon-app:latest -f back-end/Dockerfile .
+
+      - name: Sauvegarder l’image dans un fichier tar
+        run: docker save mon-app:latest -o mon-app.tar
+
+      - name: Donner les permissions nécessaires au fichier tar
+        run: sudo chmod 644 mon-app.tar
+
+      - name: Copier l’image sur Proxmox via SSH
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.PROXMOX_HOST }}
+          username: ${{ secrets.PROXMOX_SSH_USER }}
+          password: ${{ secrets.PROXMOX_PASSWORD }}
+          port: 22
+          source: "mon-app.tar"
+          target: "/root"
+
+      - name: Déployer sur Proxmox via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROXMOX_HOST }}
+          username: ${{ secrets.PROXMOX_SSH_USER }}
+          password: ${{ secrets.PROXMOX_PASSWORD }}
+          port: 22
+          script: |
+            docker stop mon-app || true
+            docker rm mon-app || true
+            docker load -i /root/mon-app.tar
+            docker run -d --name mon-app -p 3000:3000 mon-app:latest
+#onsenfouwoulaniquezebi
