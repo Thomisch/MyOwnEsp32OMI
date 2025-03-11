@@ -13,14 +13,21 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v3
 
+      - name: Créer un fichier .env avec les secrets
+        run: |
+          echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" > .env
+#          cat .env  # Debug: vérifier le contenu (optionnel, supprime après test)
+      
+
       - name: Construire l’image Docker
-        run: docker build -t mon-app:latest -f back-end/Dockerfile .
+        run: docker build -t mon-app:latest .
 
       - name: Sauvegarder l’image dans un fichier tar
         run: docker save mon-app:latest -o mon-app.tar
 
       - name: Donner les permissions nécessaires au fichier tar
         run: sudo chmod 644 mon-app.tar
+
 
       - name: Copier l’image sur Proxmox via SSH
         uses: appleboy/scp-action@master
@@ -44,4 +51,3 @@ jobs:
             docker rm mon-app || true
             docker load -i /root/mon-app.tar
             docker run -d --name mon-app -p 3000:3000 mon-app:latest
-#onsenfouwoulaniquezebi

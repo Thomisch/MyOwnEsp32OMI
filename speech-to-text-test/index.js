@@ -1,4 +1,4 @@
-const OpenAI = require("openai");
+const OpenAI = require("openai/index.mjs");
 const fs = require("fs");
 const mic = require("mic");
 require("dotenv").config();
