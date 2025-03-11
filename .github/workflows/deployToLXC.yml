@@ -17,8 +17,7 @@ jobs:
         run: |
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" > .env
 #          cat .env  # Debug: vérifier le contenu (optionnel, supprime après test)
-      
-
+#          onsenfouwoulaniquezebi    
       - name: Construire l’image Docker
         run: docker build -t mon-app:latest .
 
