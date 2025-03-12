@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 const recorder = require('node-record-lpcm16');
 
-const ws = new WebSocket('ws://localhost:8080');
+const ws = new WebSocket('ws://85.54.54.145:8080');
 
 ws.on('open', () => {
     const recording = recorder.record({
