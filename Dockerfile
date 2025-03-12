@@ -1,6 +1,9 @@
 # Étape 1 : Utilisation d'une image Node.js
 FROM node:18
 
+# Installer ffmpeg
+RUN apt update && apt install -y ffmpeg
+
 # Définir le répertoire de travail
 WORKDIR /app
 
@@ -11,8 +14,9 @@ RUN npm install
 # Copier le reste du projet
 COPY . .
 
-# Exposer le port (ex: 3000)
+# Exposer les ports
 EXPOSE 3000
+EXPOSE 8080
 
 # Démarrer l'application
 CMD ["node", "index.js"]
