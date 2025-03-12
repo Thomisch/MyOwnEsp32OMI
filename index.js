@@ -9,56 +9,127 @@ require("dotenv").config();
 const os = require('os');
 const path = require('path');
 
+const HOST = '0.0.0.0';
 const app = express();
-const wss = new WebSocket.Server({ port: 8080 });
+const wss = new WebSocket.Server({ port: 8080, host: HOST });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const WEBHOOK_URL = process.env.WEBHOOK_URL; // Ajouter l'URL du webhook dans un .env
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 // Configuration audio
 const SAMPLE_RATE = 16000;
 const CHUNK_DURATION = 5; // secondes
-let audioBuffer = Buffer.alloc(0);
-let processing = false;
-
-
-// Créer un répertoire temporaire dédié
 const TEMP_DIR = path.join(os.tmpdir(), 'temp-audio');
 fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// Ajouter cette fonction de nettoyage automatique
+// Structure pour gérer les clients
+const clients = new Map();
+
+// Fonction de nettoyage
 function cleanOldFiles() {
-    const MAX_AGE = 3600 * 1000; // 1 heure en millisecondes
+    const MAX_AGE = 3600 * 1000;
     fs.readdir(TEMP_DIR, (err, files) => {
         if (err) return;
-        
         files.forEach(file => {
             const filePath = path.join(TEMP_DIR, file);
             const stats = fs.statSync(filePath);
-            
             if (Date.now() - stats.birthtimeMs > MAX_AGE) {
                 fs.unlinkSync(filePath);
-                console.log(`Fichier nettoyé: ${file}`);
             }
         });
     });
 }
 
-
 wss.on('connection', (ws) => {
-    console.log('Client WebSocket connecté');
+    const clientId = Symbol();
+    console.log('Nouvelle connexion WebSocket');
+
+    const clientState = {
+        audioBuffer: Buffer.alloc(0),
+        processing: false,
+        transcriptions: [],
+        tempFiles: []
+    };
+    clients.set(clientId, clientState);
 
     ws.on('message', (message) => {
         if (message instanceof Buffer) {
-            audioBuffer = Buffer.concat([audioBuffer, message]);
+            const state = clients.get(clientId);
+            state.audioBuffer = Buffer.concat([state.audioBuffer, message]);
         }
     });
 
-    ws.on('close', () => {
-        console.log('Client WebSocket déconnecté');
-        audioBuffer = Buffer.alloc(0);
+    ws.on('close', async () => {
+        console.log('Connexion fermée, finalisation...');
+        const state = clients.get(clientId);
+        
+        try {
+            // Traitement final du buffer restant
+            if (state.audioBuffer.length > 0) {
+                await processClientAudio(clientId);
+            }
+            
+            // Envoi de la conversation complète
+            if (state.transcriptions.length > 0) {
+                const fullConversation = state.transcriptions.join('\n');
+                await sendToWebhook(fullConversation);
+                console.log('Conversation envoyée:', fullConversation);
+            }
+        } catch (err) {
+            console.error('Erreur lors de la fermeture:', err);
+        } finally {
+            // Nettoyage
+            state.tempFiles.forEach(file => fs.existsSync(file) && fs.unlinkSync(file));
+            clients.delete(clientId);
+        }
     });
 });
 
+async function processClientAudio(clientId) {
+    const state = clients.get(clientId);
+    if (!state || state.processing) return;
+
+    state.processing = true;
+    try {
+        const minSize = 16000 * 2 * CHUNK_DURATION;
+        while (state.audioBuffer.length >= minSize) {
+            const filename = `audio-${Date.now()}-${clientId.toString()}.wav`;
+            const tempFile = path.join(TEMP_DIR, filename);
+            const currentChunk = state.audioBuffer.slice(0, minSize);
+            state.audioBuffer = state.audioBuffer.slice(minSize);
+
+            await new Promise((resolve, reject) => {
+                ffmpeg()
+                    .input(Readable.from(currentChunk))
+                    .inputOptions(['-f s16le', '-ar 16000', '-ac 1'])
+                    .output(tempFile)
+                    .outputOptions(['-acodec pcm_s16le', '-ar 16000', '-ac 1'])
+                    .on('end', resolve)
+                    .on('error', reject)
+                    .run();
+            });
+
+            const transcription = await openai.audio.transcriptions.create({
+                file: fs.createReadStream(tempFile),
+                model: "whisper-1",
+                response_format: "text"
+            });
+
+            state.transcriptions.push(transcription);
+            state.tempFiles.push(tempFile);
+        }
+    } catch (error) {
+        console.error('Erreur de traitement:', error);
+    } finally {
+        state.processing = false;
+    }
+}
+
+// Traitement périodique pour chaque client
+setInterval(() => {
+    clients.forEach((_, clientId) => processClientAudio(clientId));
+}, CHUNK_DURATION * 1000);
+
+// Webhook et serveur Express (inchangés)
 async function sendToWebhook(transcription) {
   let data = JSON.stringify({
     "message": transcription
@@ -81,71 +152,6 @@ async function sendToWebhook(transcription) {
     console.log(error);
   });
 }
-// Traitement périodique du buffer audio
-// Modifier la partie du traitement périodique comme suit :
-setInterval(async () => {
-  if (audioBuffer.length === 0 || processing) return;
-  
-  processing = true;
-  
-  try {
-    // Calculer la taille minimale requise pour 5 secondes (16kHz * 2 bytes * 5s)
-    const minSize = 16000 * 2 * CHUNK_DURATION;
-    if (audioBuffer.length < minSize) return;
 
-    const filename = `audio-${Date.now()}.wav`;
-    const tempFile = path.join(TEMP_DIR, filename);
-    
-    // Extraire le chunk et conserver le reste
-    const currentChunk = audioBuffer.slice(0, minSize);
-    audioBuffer = audioBuffer.slice(minSize); // Conserve les données non traitées
-
-    // Conversion FFmpeg améliorée
-    await new Promise((resolve, reject) => {
-      ffmpeg()
-        .input(Readable.from(currentChunk))
-        .inputOptions([
-          '-f s16le', // Format d'entrée brut
-          '-ar 16000', // Fréquence d'échantillonnage
-          '-ac 1'     // Mono
-        ])
-        .output(tempFile)
-        .outputOptions([
-          '-acodec pcm_s16le', // Codec PCM
-          '-ar 16000',         // Même fréquence
-          '-ac 1'              // Mono
-        ])
-        .on('end', resolve)
-        .on('error', reject)
-        .run();
-    });
-
-    // Vérifier la taille du fichier généré
-    const stats = fs.statSync(tempFile);
-    if (stats.size < 44) { // Taille minimale d'un WAV vide + header
-      throw new Error('Fichier WAV invalide');
-    }
-
-    const transcription = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(tempFile),
-      model: "whisper-1",
-      response_format: "text"
-    });
-    sendToWebhook(transcription);
-    console.log('SendToWebhook:', transcription);
-
-  } catch (error) {
-    console.error('Erreur:', error.message);
-    // Supprimer le fichier problématique
-    if(fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-  } finally {
-    processing = false;
-  }
-}, CHUNK_DURATION * 1000);
-
-// Nettoyage toutes les heures
 setInterval(cleanOldFiles, 3600 * 1000);
-
-app.listen(3000, () => {
-    console.log('Serveur HTTP en écoute sur le port 3000');
-});
+app.listen(3000, HOST, () => console.log('Serveur HTTP sur port 3000'));
