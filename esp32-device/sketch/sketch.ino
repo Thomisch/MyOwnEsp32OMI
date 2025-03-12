@@ -4,6 +4,7 @@
  * 2. Wake word inference only on active speech segments
  * 3. Audio streaming to backend when wake word detected
  * 4. Send inference audio to backend for troubleshooting
+ * 5. LED indicator for wake word detection and streaming mode
  */
 
 // If your target is limited in memory remove this macro to save 10K RAM
@@ -94,6 +95,10 @@ unsigned long lastHeartbeat = 0;
 #define MSG_TYPE_INFERENCE_END "INFERENCE_AUDIO_END"
 #define MSG_TYPE_STREAM_START "STREAM_AUDIO_START"
 #define MSG_TYPE_STREAM_END "STREAM_AUDIO_END"
+
+// LED Configuration
+#define LED_PIN 2  // Using the built-in LED on most ESP32 boards
+#define LED_BLINK_INTERVAL 300  // Blink interval in milliseconds for streaming mode
 
 /**
  * Setup WiFi and WebSocket connection
@@ -415,6 +420,9 @@ bool runWakeWordInference() {
         Serial.println(highest_confidence, 4);
         Serial.println("------------------------------------\n");
         
+        // Turn on LED to indicate wake word detection
+        digitalWrite(LED_PIN, HIGH);
+        
         detected = true;
     } else {
         Serial.println("\n------------------------------------");
@@ -444,6 +452,7 @@ void streamAudioToServer() {
     streamingStartTime = millis();
     int packets_sent = 0;
     unsigned long last_status = 0;
+    unsigned long last_blink = 0; // For LED blinking
 
     // We'll use the same buffer size for simplicity
     int16_t streamBuffer[512];
@@ -455,6 +464,12 @@ void streamAudioToServer() {
             last_status = millis();
             Serial.printf("Streaming... packets sent: %d, time remaining: %d sec\n",
                          packets_sent, (STREAMING_DURATION - (millis() - streamingStartTime)) / 1000);
+        }
+        
+        // Blink LED while streaming
+        if (millis() - last_blink > LED_BLINK_INTERVAL) {
+            last_blink = millis();
+            digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Toggle LED state
         }
 
         // Handle WebSocket connection
@@ -494,6 +509,9 @@ void streamAudioToServer() {
 
     Serial.println("Audio streaming complete");
     Serial.printf("Total packets sent: %d\n", packets_sent);
+    
+    // Turn off LED when streaming is complete
+    digitalWrite(LED_PIN, LOW);
 }
 
 void setup() {
@@ -504,6 +522,10 @@ void setup() {
     Serial.println("Wake Word Detection with Voice Activity Detection");
     Serial.println("---------------------------------------------");
 
+    // Setup LED pin
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);  // Start with LED off
+    
     // Setup WiFi and WebSocket
     setupWiFi();
 
@@ -548,6 +570,7 @@ void loop() {
     switch (currentMode) {
         // Listening for voice activity
         case LISTEN_MODE:
+            digitalWrite(LED_PIN, LOW); // Ensure LED is off
             if (listenForVoiceActivity()) {
                 // Voice activity detected, start recording
                 recordingStartTime = millis();
@@ -576,6 +599,7 @@ void loop() {
                 currentMode = STREAMING_MODE;
             } else {
                 // Wake word not detected, go back to listening
+                digitalWrite(LED_PIN, LOW); // Ensure LED is off
                 currentMode = LISTEN_MODE;
             }
             break;
