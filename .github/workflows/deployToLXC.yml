@@ -16,7 +16,7 @@ jobs:
       - name: Créer un fichier .env avec les secrets
         run: |
           echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" > .env
-          echo "WEBHOOK_URL=${{ secrets.WEBHOOK_URL }}" > .env
+          echo "WEBHOOK_URL=${{ secrets.WEBHOOK_URL }}" >> .env
 #          cat .env  # Debug: vérifier le contenu (optionnel, supprime après test)
 #          onsenfouwoulaniquezebi    
       - name: Construire l’image Docker
