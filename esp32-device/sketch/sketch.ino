@@ -5,6 +5,7 @@
  * 3. Audio streaming to backend when wake word detected
  * 4. Send inference audio to backend for troubleshooting
  * 5. LED indicator for wake word detection and streaming mode
+ * 6. On-demand WebSocket connections only during streaming
  */
 
 // If your target is limited in memory remove this macro to save 10K RAM
@@ -19,11 +20,12 @@
 // WiFi and WebSocket Configuration
 const char* ssid = "MIWIFI_E444";
 const char* password = "246J9F4K";
-const char* websocket_server_host = "85.54.54.145";
+const char* websocket_server_host = "192.168.1.141";
 const uint16_t websocket_server_port = 8080;
 const char* websocket_path = "/";
 
 WebSocketsClient webSocket;
+bool websocketConnected = false;
 
 // Detection parameters - removing fixed threshold, will use highest confidence approach
 #define STREAMING_DURATION 60000    // Duration to stream audio after detection (1 min)
@@ -36,6 +38,12 @@ WebSocketsClient webSocket;
 #define VAD_MIN_DURATION 100        // Minimum duration of sound to trigger recording (ms)
 #define VAD_MAX_DURATION 1500       // Maximum recording duration (ms)
 #define VAD_SILENCE_DURATION 500    // Duration of silence to end recording (ms)
+
+// Streaming silence detection parameters
+#define STREAMING_CALIBRATION_MS 1500    // Time to calibrate background noise (ms)
+#define STREAMING_SILENCE_RATIO 0.3      // Ratio of the average to consider as silence (30%)
+#define STREAMING_MIN_SILENCE_THRESHOLD 15  // Minimum silence threshold regardless of environment
+#define STREAMING_SILENCE_DURATION 5000  // Duration of silence to end streaming (5 seconds)
 
 // I2S pins
 #define I2S_MIC_WS   15  // Word Select (LRCLK)
@@ -101,7 +109,7 @@ unsigned long lastHeartbeat = 0;
 #define LED_BLINK_INTERVAL 300  // Blink interval in milliseconds for streaming mode
 
 /**
- * Setup WiFi and WebSocket connection
+ * Setup WiFi only (no WebSocket initialization)
  */
 void setupWiFi() {
     // Initialize WiFi
@@ -123,12 +131,48 @@ void setupWiFi() {
     } else {
         Serial.println("\nWiFi connection failed! Continuing anyway...");
     }
+}
 
-    // Initialize WebSocket
+/**
+ * Initialize WebSocket connection (called before streaming)
+ */
+bool setupWebSocket() {
     Serial.println("Initializing WebSocket connection...");
+    
+    // Configure WebSocket
     webSocket.begin(websocket_server_host, websocket_server_port, websocket_path);
     webSocket.onEvent(webSocketEvent);
     webSocket.setReconnectInterval(3000);
+    
+    // Wait for connection
+    int timeout = 0;
+    while (!webSocket.isConnected() && timeout < 10) {
+        webSocket.loop();
+        delay(300);
+        timeout++;
+    }
+    
+    websocketConnected = webSocket.isConnected();
+    
+    if (websocketConnected) {
+        Serial.println("WebSocket connected successfully");
+    } else {
+        Serial.println("WebSocket connection failed");
+    }
+    
+    return websocketConnected;
+}
+
+/**
+ * Close WebSocket connection
+ * Should only be called from streamAudioToServer when streaming is complete
+ */
+void closeWebSocket() {
+    if (websocketConnected) {
+        Serial.println("Closing WebSocket connection after streaming");
+        webSocket.disconnect();
+        websocketConnected = false;
+    }
 }
 
 /**
@@ -166,9 +210,11 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
     switch(type) {
         case WStype_CONNECTED:
             Serial.println("WebSocket connected");
+            websocketConnected = true;
             break;
         case WStype_DISCONNECTED:
             Serial.println("WebSocket disconnected");
+            websocketConnected = false;
             break;
         case WStype_ERROR:
             Serial.printf("WebSocket error: %s\n", payload);
@@ -307,47 +353,16 @@ bool recordAudioSegment() {
 }
 
 /**
- * Send inference audio to backend
+ * Store inference audio (for future backend sending if wake word detected)
+ * Not actually sending over WebSocket anymore - just keeping for reference
  */
-void sendInferenceAudioToBackend() {
-    if (!webSocket.isConnected()) {
-        Serial.println("WebSocket not connected, cannot send inference audio");
-        return;
-    }
-
-    Serial.println("Sending inference audio to backend...");
-
-    // Send start marker
-    webSocket.sendTXT(MSG_TYPE_INFERENCE_START);
-    delay(50); // Small delay to ensure message separation
-
-    // Convert and send the inference buffer
-    uint8_t packet[1024]; // Buffer for binary packets
-    int packet_size = 0;
-    int packets_sent = 0;
-
-    // Send the inference buffer in chunks
-    for (size_t i = 0; i < inference.buf_count; i++) {
-        // Add sample to packet (16-bit, little endian)
-        packet[packet_size++] = inference.buffer[i] & 0xFF;
-        packet[packet_size++] = (inference.buffer[i] >> 8) & 0xFF;
-
-        // Send when packet is full or at the end
-        if (packet_size >= sizeof(packet) - 2 || i == inference.buf_count - 1) {
-            if (packet_size > 0) {
-                webSocket.sendBIN(packet, packet_size);
-                packets_sent++;
-                packet_size = 0;
-            }
-        }
-    }
-
-    // Send end marker
-    delay(50); // Small delay to ensure message separation
-    webSocket.sendTXT(MSG_TYPE_INFERENCE_END);
-
-    Serial.printf("Sent inference audio: %d samples in %d packets\n",
-                 inference.buf_count, packets_sent);
+void storeInferenceAudio() {
+    Serial.println("Storing inference audio for possible troubleshooting");
+    
+    // We're not sending the inference audio over WebSocket anymore
+    // Just keeping the function for future enhancements if needed
+    
+    Serial.printf("Stored %d samples for potential analysis\n", inference.buf_count);
 }
 
 /**
@@ -357,8 +372,8 @@ void sendInferenceAudioToBackend() {
 bool runWakeWordInference() {
     Serial.println("Running wake word inference...");
 
-    // First, send the inference audio to the backend for troubleshooting
-    sendInferenceAudioToBackend();
+    // Store inference audio but don't send it (removed WebSocket connection)
+    storeInferenceAudio();
 
     // If buffer has too few samples, pad it or reject it
     if (inference.buf_count < inference.n_samples / 2) {
@@ -440,9 +455,17 @@ bool runWakeWordInference() {
 
 /**
  * Stream audio to WebSocket server
+ * This is the ONLY function that should establish and close WebSocket connections
  */
 void streamAudioToServer() {
     Serial.println("Starting audio streaming...");
+    
+    // This is the ONLY place we should connect to WebSocket
+    // Connect to WebSocket for streaming
+    if (!setupWebSocket()) {
+        Serial.println("Failed to connect WebSocket for streaming, aborting");
+        return;
+    }
 
     // Send start marker
     webSocket.sendTXT(MSG_TYPE_STREAM_START);
@@ -453,6 +476,24 @@ void streamAudioToServer() {
     int packets_sent = 0;
     unsigned long last_status = 0;
     unsigned long last_blink = 0; // For LED blinking
+    
+    // Silence detection variables
+    unsigned long lastSoundAboveThreshold = millis();
+    int currentVolume = 0;
+    bool silenceEndedStreaming = false;
+    
+    // Dynamic threshold variables
+    bool calibrationDone = false;
+    unsigned long calibrationStartTime = millis();
+    int volumeSum = 0;
+    int volumeCount = 0;
+    int maxVolume = 0;
+    int avgVolume = 0;
+    int dynamicSilenceThreshold = STREAMING_MIN_SILENCE_THRESHOLD;
+    int talkingVolumes[20] = {0}; // Keep track of last 20 volumes during talking
+    int talkingVolumesIndex = 0;
+    int talkingVolumesCount = 0;
+    int talkingAvgVolume = 0;
 
     // We'll use the same buffer size for simplicity
     int16_t streamBuffer[512];
@@ -462,8 +503,11 @@ void streamAudioToServer() {
         // Heartbeat messages
         if (millis() - last_status > 2000) {
             last_status = millis();
-            Serial.printf("Streaming... packets sent: %d, time remaining: %d sec\n",
-                         packets_sent, (STREAMING_DURATION - (millis() - streamingStartTime)) / 1000);
+            Serial.printf("Streaming... packets: %d, remaining: %d sec, volume: %d, threshold: %d\n",
+                         packets_sent, 
+                         (STREAMING_DURATION - (millis() - streamingStartTime)) / 1000,
+                         currentVolume,
+                         dynamicSilenceThreshold);
         }
 
         // Blink LED while streaming
@@ -483,6 +527,74 @@ void streamAudioToServer() {
         }
 
         int samples_read = bytes_read / 2;  // 16-bit samples = 2 bytes
+        
+        // Calculate volume of current buffer for silence detection
+        currentVolume = calculateVolume(streamBuffer, samples_read);
+        
+        // During calibration phase, collect volume statistics
+        if (!calibrationDone) {
+            volumeSum += currentVolume;
+            volumeCount++;
+            
+            if (currentVolume > maxVolume) {
+                maxVolume = currentVolume;
+            }
+            
+            // End calibration after specified time
+            if (millis() - calibrationStartTime > STREAMING_CALIBRATION_MS) {
+                calibrationDone = true;
+                avgVolume = volumeSum / volumeCount;
+                
+                // Set initial dynamic threshold based on calibration
+                // Use either a percentage of max volume or a minimum value
+                dynamicSilenceThreshold = max(
+                    STREAMING_MIN_SILENCE_THRESHOLD,
+                    (int)(avgVolume * 1.5)  // Start with 150% of average background noise
+                );
+                
+                Serial.printf("Calibration complete - Avg: %d, Max: %d, Initial threshold: %d\n", 
+                             avgVolume, maxVolume, dynamicSilenceThreshold);
+            }
+        } else {
+            // After calibration, continue to adapt the threshold based on talking volumes
+            
+            // If current volume is significantly above the threshold, consider it talking
+            if (currentVolume > dynamicSilenceThreshold * 2) {
+                // Add to talking volumes circular buffer
+                talkingVolumes[talkingVolumesIndex] = currentVolume;
+                talkingVolumesIndex = (talkingVolumesIndex + 1) % 20;
+                if (talkingVolumesCount < 20) {
+                    talkingVolumesCount++;
+                }
+                
+                // Calculate average of talking volumes
+                int talkingVolumeSum = 0;
+                for (int i = 0; i < talkingVolumesCount; i++) {
+                    talkingVolumeSum += talkingVolumes[i];
+                }
+                talkingAvgVolume = talkingVolumeSum / talkingVolumesCount;
+                
+                // Update dynamic threshold based on talking volume
+                // Use a percentage of the average talking volume
+                dynamicSilenceThreshold = max(
+                    STREAMING_MIN_SILENCE_THRESHOLD,
+                    (int)(talkingAvgVolume * STREAMING_SILENCE_RATIO)
+                );
+            }
+        }
+        
+        // Check if volume is above the dynamic silence threshold
+        if (currentVolume > dynamicSilenceThreshold) {
+            lastSoundAboveThreshold = millis();
+        }
+        
+        // Check if we've been silent for too long
+        if (calibrationDone && millis() - lastSoundAboveThreshold > STREAMING_SILENCE_DURATION) {
+            Serial.printf("Ending streaming due to %d ms of silence (volume: %d, threshold: %d)\n", 
+                STREAMING_SILENCE_DURATION, currentVolume, dynamicSilenceThreshold);
+            silenceEndedStreaming = true;
+            break;
+        }
 
         // Convert samples to 8-bit format for sending
         uint8_t payload[samples_read * 2];
@@ -497,6 +609,13 @@ void streamAudioToServer() {
             packets_sent++;
         } else {
             Serial.println("WebSocket disconnected during streaming!");
+            // Try to reconnect
+            if (setupWebSocket()) {
+                Serial.println("WebSocket reconnected");
+            } else {
+                Serial.println("WebSocket reconnection failed, stopping streaming");
+                break;
+            }
         }
 
         // Small delay to prevent overwhelming the system
@@ -507,11 +626,23 @@ void streamAudioToServer() {
     webSocket.sendTXT(MSG_TYPE_STREAM_END);
     delay(50);
 
-    Serial.println("Audio streaming complete");
+    if (silenceEndedStreaming) {
+        Serial.println("Audio streaming ended early due to silence detection");
+    } else {
+        Serial.println("Audio streaming complete (timed out)");
+    }
     Serial.printf("Total packets sent: %d\n", packets_sent);
+    if (talkingVolumesCount > 0) {
+        Serial.printf("Final values - Avg talking volume: %d, Silence threshold: %d\n", 
+                     talkingAvgVolume, dynamicSilenceThreshold);
+    }
 
     // Turn off LED when streaming is complete
     digitalWrite(LED_PIN, LOW);
+    
+    // Close WebSocket connection when done streaming
+    // This is the ONLY place we should disconnect from WebSocket
+    closeWebSocket();
 }
 
 void setup() {
@@ -519,14 +650,14 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     Serial.println("\n---------------------------------------------");
-    Serial.println("Wake Word Detection with Voice Activity Detection");
+    Serial.println("Wake Word Detection with On-demand WebSocket");
     Serial.println("---------------------------------------------");
 
     // Setup LED pin
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);  // Start with LED off
 
-    // Setup WiFi and WebSocket
+    // Setup WiFi only (no WebSocket yet)
     setupWiFi();
 
     // Initialize I2S
@@ -549,6 +680,13 @@ void setup() {
     Serial.printf("  Max duration: %d ms\n", VAD_MAX_DURATION);
     Serial.printf("  Silence duration: %d ms\n", VAD_SILENCE_DURATION);
     Serial.printf("  Using highest confidence approach (threshold: %.2f)\n", CONFIDENCE_THRESHOLD);
+    Serial.println("Streaming parameters:");
+    Serial.printf("  Max streaming duration: %d ms\n", STREAMING_DURATION);
+    Serial.printf("  Calibration time: %d ms\n", STREAMING_CALIBRATION_MS);
+    Serial.printf("  Silence ratio: %.1f\n", STREAMING_SILENCE_RATIO);
+    Serial.printf("  Min silence threshold: %d\n", STREAMING_MIN_SILENCE_THRESHOLD);
+    Serial.printf("  Silence end duration: %d ms\n", STREAMING_SILENCE_DURATION);
+    Serial.println("WebSocket will only connect when needed for streaming");
 }
 
 void loop() {
@@ -560,11 +698,13 @@ void loop() {
                      currentMode == RECORDING_MODE ? "RECORDING" :
                      currentMode == INFERENCING_MODE ? "INFERENCING" : "STREAMING",
                      WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED",
-                     webSocket.isConnected() ? "CONNECTED" : "DISCONNECTED");
+                     websocketConnected ? "CONNECTED" : "DISCONNECTED");
     }
 
-    // Handle WebSocket connection
-    webSocket.loop();
+    // Handle WebSocket loop only if connected
+    if (websocketConnected) {
+        webSocket.loop();
+    }
 
     // State machine based on current mode
     switch (currentMode) {
