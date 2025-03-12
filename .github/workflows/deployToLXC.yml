@@ -50,4 +50,4 @@ jobs:
             docker stop mon-app || true
             docker rm mon-app || true
             docker load -i /root/mon-app.tar
-            docker run -d --name mon-app -p 3000:3000 mon-app:latest
+            docker run -d --name mon-app -p 8080:8080 -p 3000:3000 mon-app:latest

@@ -13,6 +13,7 @@ COPY . .
 
 # Exposer le port (ex: 3000)
 EXPOSE 3000
+EXPOSE 8080
 
 # Démarrer l'application
 CMD ["node", "index.js"]
