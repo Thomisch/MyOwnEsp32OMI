@@ -2,7 +2,7 @@
 FROM node:18
 
 # Installer ffmpeg
-RUN apt update && apt install -y ffmpeg
+RUN apt-get update && apt-get install -y ffmpeg
 
 # Définir le répertoire de travail
 WORKDIR /app
