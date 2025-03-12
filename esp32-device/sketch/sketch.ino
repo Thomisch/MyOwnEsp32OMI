@@ -19,9 +19,9 @@
 // WiFi and WebSocket Configuration
 const char* ssid = "MIWIFI_E444";
 const char* password = "246J9F4K";
-const char* websocket_server_host = "192.168.1.137";
-const uint16_t websocket_server_port = 5000;
-const char* websocket_path = "/ws";
+const char* websocket_server_host = "85.54.54.145";
+const uint16_t websocket_server_port = 8080;
+const char* websocket_path = "/";
 
 WebSocketsClient webSocket;
 
@@ -346,7 +346,7 @@ void sendInferenceAudioToBackend() {
     delay(50); // Small delay to ensure message separation
     webSocket.sendTXT(MSG_TYPE_INFERENCE_END);
 
-    Serial.printf("Sent inference audio: %d samples in %d packets\n", 
+    Serial.printf("Sent inference audio: %d samples in %d packets\n",
                  inference.buf_count, packets_sent);
 }
 
@@ -398,13 +398,13 @@ bool runWakeWordInference() {
     for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
         float confidence = result.classification[ix].value;
         String label = result.classification[ix].label;
-        
+
         // Print all predictions
         Serial.print("    ");
         Serial.print(label);
         Serial.print(": ");
         Serial.println(confidence, 4);
-        
+
         // Check if this is the highest confidence so far
         if (confidence > highest_confidence) {
             highest_confidence = confidence;
@@ -419,10 +419,10 @@ bool runWakeWordInference() {
         Serial.print("Highest confidence: ");
         Serial.println(highest_confidence, 4);
         Serial.println("------------------------------------\n");
-        
+
         // Turn on LED to indicate wake word detection
         digitalWrite(LED_PIN, HIGH);
-        
+
         detected = true;
     } else {
         Serial.println("\n------------------------------------");
@@ -465,7 +465,7 @@ void streamAudioToServer() {
             Serial.printf("Streaming... packets sent: %d, time remaining: %d sec\n",
                          packets_sent, (STREAMING_DURATION - (millis() - streamingStartTime)) / 1000);
         }
-        
+
         // Blink LED while streaming
         if (millis() - last_blink > LED_BLINK_INTERVAL) {
             last_blink = millis();
@@ -509,7 +509,7 @@ void streamAudioToServer() {
 
     Serial.println("Audio streaming complete");
     Serial.printf("Total packets sent: %d\n", packets_sent);
-    
+
     // Turn off LED when streaming is complete
     digitalWrite(LED_PIN, LOW);
 }
@@ -525,7 +525,7 @@ void setup() {
     // Setup LED pin
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);  // Start with LED off
-    
+
     // Setup WiFi and WebSocket
     setupWiFi();
 
