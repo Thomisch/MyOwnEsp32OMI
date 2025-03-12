@@ -2,8 +2,7 @@ const express = require('express');
 const WebSocket = require('ws');
 const ffmpeg = require('fluent-ffmpeg');
 const { Readable } = require('stream');
-const { tmpdir } = require('os');
-const { join } = require('path');
+const axios = require('axios');
 const { OpenAI } = require('openai');
 const fs = require('fs');
 require("dotenv").config();
@@ -13,6 +12,7 @@ const path = require('path');
 const app = express();
 const wss = new WebSocket.Server({ port: 8080 });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const WEBHOOK_URL = process.env.WEBHOOK_URL; // Ajouter l'URL du webhook dans un .env
 
 // Configuration audio
 const SAMPLE_RATE = 16000;
@@ -59,6 +59,28 @@ wss.on('connection', (ws) => {
     });
 });
 
+async function sendToWebhook(transcription) {
+  let data = JSON.stringify({
+    "message": transcription
+  });
+  
+  let config = {
+    method: 'post',
+    maxBodyLength: Infinity,
+    url: 'https://n8n.stealz.moe/webhook/a79df37a-fe72-40a1-b734-b5e80997a2e2',
+    headers: { 
+      'content-type': 'application/json'
+    },
+    data : data
+  };
+  axios.request(config)
+  .then((response) => {
+    console.log(JSON.stringify(response.data));
+  })
+  .catch((error) => {
+    console.log(error);
+  });
+}
 // Traitement périodique du buffer audio
 // Modifier la partie du traitement périodique comme suit :
 setInterval(async () => {
@@ -109,8 +131,8 @@ setInterval(async () => {
       model: "whisper-1",
       response_format: "text"
     });
-
-    console.log('Transcription:', transcription);
+    sendToWebhook(transcription);
+    console.log('SendToWebhook:', transcription);
 
   } catch (error) {
     console.error('Erreur:', error.message);
